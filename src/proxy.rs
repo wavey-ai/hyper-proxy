@@ -299,3 +299,45 @@ async fn collect_body(mut body: BodyStream) -> Result<Bytes, ServerError> {
     }
     Ok(Bytes::from(data))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use http::HeaderName;
+
+    #[test]
+    fn compose_backend_url_handles_paths_and_queries() {
+        let base = url::Url::parse("https://example.com").unwrap();
+        let uri: Uri = "/v1/items?limit=10".parse().unwrap();
+        let out = compose_backend_url(&base, &uri).unwrap();
+        assert_eq!(out.as_str(), "https://example.com/v1/items?limit=10");
+
+        let base = url::Url::parse("https://example.com/base").unwrap();
+        let uri: Uri = "/child".parse().unwrap();
+        let out = compose_backend_url(&base, &uri).unwrap();
+        assert_eq!(out.as_str(), "https://example.com/base/child");
+
+        let base = url::Url::parse("https://example.com/base/").unwrap();
+        let uri: Uri = "/child/".parse().unwrap();
+        let out = compose_backend_url(&base, &uri).unwrap();
+        assert_eq!(out.as_str(), "https://example.com/base/child/");
+
+        let base = url::Url::parse("https://example.com/base").unwrap();
+        let uri: Uri = "/".parse().unwrap();
+        let out = compose_backend_url(&base, &uri).unwrap();
+        assert_eq!(out.as_str(), "https://example.com/base");
+    }
+
+    #[test]
+    fn should_skip_request_header_filters_hop_by_hop() {
+        let connection = HeaderName::from_static("connection");
+        let upgrade = HeaderName::from_static("upgrade");
+        let host = HeaderName::from_static("host");
+        let custom = HeaderName::from_static("x-custom");
+
+        assert!(should_skip_request_header(&connection));
+        assert!(should_skip_request_header(&upgrade));
+        assert!(should_skip_request_header(&host));
+        assert!(!should_skip_request_header(&custom));
+    }
+}

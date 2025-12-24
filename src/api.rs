@@ -164,3 +164,189 @@ fn json_error(status: StatusCode, message: String) -> HandlerResponse {
         status,
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::balancer::LoadBalancingMode;
+    use bytes::Bytes;
+    use http::StatusCode;
+    use serde_json::{json, Value};
+    use std::sync::Once;
+
+    fn init_crypto() {
+        static INIT: Once = Once::new();
+        INIT.call_once(|| {
+            let _ = rustls::crypto::ring::default_provider().install_default();
+        });
+    }
+
+    async fn call_api(
+        state: &ProxyState,
+        method: Method,
+        path: &str,
+        body: Bytes,
+    ) -> HandlerResponse {
+        let req = Request::builder()
+            .method(method)
+            .uri(path)
+            .body(())
+            .unwrap();
+        handle_api(state, req, body).await.unwrap()
+    }
+
+    fn response_json(response: &HandlerResponse) -> Value {
+        let body = response.body.as_ref().expect("response body");
+        serde_json::from_slice(body).expect("valid json response")
+    }
+
+    #[tokio::test]
+    async fn health_ok() {
+        init_crypto();
+        let state = ProxyState::new(LoadBalancingMode::LeastConn).unwrap();
+        let response = call_api(&state, Method::GET, "/api/health", Bytes::new()).await;
+
+        assert_eq!(response.status, StatusCode::OK);
+        let payload = response_json(&response);
+        assert_eq!(payload["status"], "ok");
+    }
+
+    #[tokio::test]
+    async fn add_list_delete_backend() {
+        init_crypto();
+        let state = ProxyState::new(LoadBalancingMode::LeastConn).unwrap();
+
+        let body = Bytes::from(serde_json::to_vec(&json!({
+            "url": "https://example.com",
+            "max_connections": null
+        }))
+        .unwrap());
+        let response = call_api(&state, Method::POST, "/api/backends", body).await;
+        assert_eq!(response.status, StatusCode::CREATED);
+        let created = response_json(&response);
+        let id = created["id"].as_str().unwrap().to_string();
+
+        let response = call_api(&state, Method::GET, "/api/backends", Bytes::new()).await;
+        assert_eq!(response.status, StatusCode::OK);
+        let list = response_json(&response);
+        assert_eq!(list["mode"], "leastconn");
+        assert_eq!(list["http"].as_array().unwrap().len(), 1);
+        assert!(list["ws"].as_array().unwrap().is_empty());
+
+        let response = call_api(
+            &state,
+            Method::DELETE,
+            &format!("/api/backends/{id}"),
+            Bytes::new(),
+        )
+        .await;
+        assert_eq!(response.status, StatusCode::OK);
+
+        let response = call_api(
+            &state,
+            Method::DELETE,
+            &format!("/api/backends/{id}"),
+            Bytes::new(),
+        )
+        .await;
+        assert_eq!(response.status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn add_backend_rejects_invalid_json() {
+        init_crypto();
+        let state = ProxyState::new(LoadBalancingMode::LeastConn).unwrap();
+
+        let response =
+            call_api(&state, Method::POST, "/api/backends", Bytes::from_static(b"{oops"))
+                .await;
+        assert_eq!(response.status, StatusCode::BAD_REQUEST);
+        let payload = response_json(&response);
+        assert!(payload["error"]
+            .as_str()
+            .unwrap()
+            .contains("invalid json"));
+    }
+
+    #[tokio::test]
+    async fn add_backend_rejects_invalid_scheme() {
+        init_crypto();
+        let state = ProxyState::new(LoadBalancingMode::LeastConn).unwrap();
+
+        let body = Bytes::from(serde_json::to_vec(&json!({
+            "url": "ftp://example.com"
+        }))
+        .unwrap());
+        let response = call_api(&state, Method::POST, "/api/backends", body).await;
+        assert_eq!(response.status, StatusCode::BAD_REQUEST);
+        let payload = response_json(&response);
+        assert!(payload["error"]
+            .as_str()
+            .unwrap()
+            .contains("unsupported backend scheme"));
+    }
+
+    #[tokio::test]
+    async fn set_balancer_and_get_mode() {
+        init_crypto();
+        let state = ProxyState::new(LoadBalancingMode::LeastConn).unwrap();
+
+        let body = Bytes::from(serde_json::to_vec(&json!({
+            "mode": "queue"
+        }))
+        .unwrap());
+        let response = call_api(&state, Method::PUT, "/api/balancer", body).await;
+        assert_eq!(response.status, StatusCode::OK);
+
+        let response = call_api(&state, Method::GET, "/api/balancer", Bytes::new()).await;
+        assert_eq!(response.status, StatusCode::OK);
+        let payload = response_json(&response);
+        assert_eq!(payload["mode"], "queue");
+    }
+
+    #[tokio::test]
+    async fn set_balancer_rejects_invalid_mode() {
+        init_crypto();
+        let state = ProxyState::new(LoadBalancingMode::LeastConn).unwrap();
+
+        let body = Bytes::from(serde_json::to_vec(&json!({
+            "mode": "unknown"
+        }))
+        .unwrap());
+        let response = call_api(&state, Method::PUT, "/api/balancer", body).await;
+        assert_eq!(response.status, StatusCode::BAD_REQUEST);
+        let payload = response_json(&response);
+        assert!(payload["error"]
+            .as_str()
+            .unwrap()
+            .contains("unsupported load balancer"));
+    }
+
+    #[tokio::test]
+    async fn delete_backend_requires_id() {
+        init_crypto();
+        let state = ProxyState::new(LoadBalancingMode::LeastConn).unwrap();
+
+        let response = call_api(&state, Method::DELETE, "/api/backends/", Bytes::new()).await;
+        assert_eq!(response.status, StatusCode::BAD_REQUEST);
+        let payload = response_json(&response);
+        assert!(payload["error"]
+            .as_str()
+            .unwrap()
+            .contains("backend id is required"));
+    }
+
+    #[tokio::test]
+    async fn unknown_endpoint_returns_not_found() {
+        init_crypto();
+        let state = ProxyState::new(LoadBalancingMode::LeastConn).unwrap();
+
+        let response = call_api(&state, Method::GET, "/api/unknown", Bytes::new()).await;
+        assert_eq!(response.status, StatusCode::NOT_FOUND);
+        let payload = response_json(&response);
+        assert!(payload["error"]
+            .as_str()
+            .unwrap()
+            .contains("unknown api endpoint"));
+    }
+}

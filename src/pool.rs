@@ -235,3 +235,105 @@ fn allocate_backend(
         backend_id,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::BackendScheme;
+    use std::sync::Arc;
+    use tokio::time::{timeout, Duration};
+    use url::Url;
+
+    fn backend(id: &str, max_connections: Option<usize>) -> Backend {
+        Backend {
+            id: id.to_string(),
+            url: Url::parse(&format!("https://{id}.example.com")).unwrap(),
+            scheme: BackendScheme::Https,
+            max_connections,
+        }
+    }
+
+    #[test]
+    fn select_least_conn_skips_unavailable() {
+        let backends = vec![
+            BackendState {
+                backend: backend("full", Some(1)),
+                active: 1,
+            },
+            BackendState {
+                backend: backend("idle", None),
+                active: 3,
+            },
+        ];
+        assert_eq!(select_least_conn(&backends), Some(1));
+
+        let backends = vec![BackendState {
+            backend: backend("only", Some(1)),
+            active: 1,
+        }];
+        assert_eq!(select_least_conn(&backends), None);
+    }
+
+    #[test]
+    fn select_queue_round_robin_advances_cursor() {
+        let mut state = PoolState {
+            backends: vec![
+                BackendState {
+                    backend: backend("a", None),
+                    active: 0,
+                },
+                BackendState {
+                    backend: backend("b", None),
+                    active: 0,
+                },
+                BackendState {
+                    backend: backend("c", None),
+                    active: 0,
+                },
+            ],
+            rr_cursor: 0,
+        };
+
+        assert_eq!(select_queue(&mut state), Some(0));
+        assert_eq!(state.rr_cursor, 1);
+        assert_eq!(select_queue(&mut state), Some(1));
+        assert_eq!(state.rr_cursor, 2);
+        assert_eq!(select_queue(&mut state), Some(2));
+        assert_eq!(state.rr_cursor, 0);
+    }
+
+    #[tokio::test]
+    async fn acquire_queue_waits_until_release() {
+        let pool = Arc::new(BackendPool::new());
+        pool.add_backend(backend("solo", Some(1))).await;
+
+        let lease = pool.acquire(LoadBalancingMode::Queue).await.unwrap();
+
+        let pool_clone = Arc::clone(&pool);
+        let pending = tokio::spawn(async move {
+            timeout(Duration::from_millis(500), pool_clone.acquire(LoadBalancingMode::Queue)).await
+        });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        drop(lease);
+
+        let acquired = pending.await.unwrap().unwrap().unwrap();
+        assert_eq!(acquired.backend().id, "solo");
+    }
+
+    #[tokio::test]
+    async fn remove_backend_resets_rr_cursor_when_out_of_range() {
+        let pool = Arc::new(BackendPool::new());
+        pool.add_backend(backend("a", None)).await;
+        pool.add_backend(backend("b", None)).await;
+
+        let lease = pool.acquire(LoadBalancingMode::Queue).await.unwrap();
+        drop(lease);
+
+        let removed = pool.remove_backend("b").await.unwrap();
+        assert_eq!(removed.id, "b");
+
+        let state = pool.inner.lock().await;
+        assert_eq!(state.rr_cursor, 0);
+    }
+}

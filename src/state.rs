@@ -103,3 +103,53 @@ impl ProxyState {
         self.ws_pool.acquire(mode).await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::balancer::LoadBalancingMode;
+    use std::sync::Once;
+    use url::Url;
+
+    fn init_crypto() {
+        static INIT: Once = Once::new();
+        INIT.call_once(|| {
+            let _ = rustls::crypto::ring::default_provider().install_default();
+        });
+    }
+
+    #[tokio::test]
+    async fn add_backend_rejects_invalid_scheme() {
+        init_crypto();
+        let state = ProxyState::new(LoadBalancingMode::LeastConn).unwrap();
+        let url = Url::parse("ftp://example.com").unwrap();
+        let err = state.add_backend(url, None).await.unwrap_err();
+        assert!(err.contains("unsupported backend scheme"));
+    }
+
+    #[tokio::test]
+    async fn add_backend_rejects_zero_max_connections() {
+        init_crypto();
+        let state = ProxyState::new(LoadBalancingMode::LeastConn).unwrap();
+        let url = Url::parse("https://example.com").unwrap();
+        let err = state.add_backend(url, Some(0)).await.unwrap_err();
+        assert!(err.contains("max_connections must be > 0"));
+    }
+
+    #[tokio::test]
+    async fn list_backends_separates_http_and_ws() {
+        init_crypto();
+        let state = ProxyState::new(LoadBalancingMode::LeastConn).unwrap();
+        let http_url = Url::parse("https://example.com").unwrap();
+        let ws_url = Url::parse("wss://example.com").unwrap();
+
+        state.add_backend(http_url, None).await.unwrap();
+        state.add_backend(ws_url, None).await.unwrap();
+
+        let (http, ws) = state.list_backends().await;
+        assert_eq!(http.len(), 1);
+        assert_eq!(ws.len(), 1);
+        assert_eq!(http[0].scheme, BackendScheme::Https);
+        assert_eq!(ws[0].scheme, BackendScheme::Wss);
+    }
+}

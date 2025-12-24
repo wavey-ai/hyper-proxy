@@ -48,3 +48,53 @@ fn request_id_from_headers(headers: &HeaderMap) -> Option<String> {
         .filter(|value| !value.is_empty())
         .map(str::to_string)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use http::Request;
+
+    #[test]
+    fn ensure_context_uses_existing_header() {
+        let mut req = Request::builder()
+            .uri("https://example.com/")
+            .header(REQUEST_ID_HEADER, "req-123")
+            .body(())
+            .unwrap();
+
+        let ctx = ensure_context(&mut req);
+        assert_eq!(ctx.request_id, "req-123");
+        assert_eq!(request_id(&req), Some("req-123"));
+    }
+
+    #[test]
+    fn ensure_context_persists_generated_id() {
+        let mut req = Request::builder()
+            .uri("https://example.com/")
+            .body(())
+            .unwrap();
+
+        let ctx = ensure_context(&mut req);
+        let second = ensure_context(&mut req);
+        assert_eq!(ctx.request_id, second.request_id);
+    }
+
+    #[test]
+    fn attach_request_id_does_not_duplicate() {
+        let mut response = web_service::HandlerResponse {
+            status: http::StatusCode::OK,
+            body: None,
+            content_type: None,
+            headers: vec![(REQUEST_ID_HEADER.to_string(), "req-1".to_string())],
+            etag: None,
+        };
+
+        attach_request_id(&mut response, "req-1");
+        let count = response
+            .headers
+            .iter()
+            .filter(|(key, _)| key.eq_ignore_ascii_case(REQUEST_ID_HEADER))
+            .count();
+        assert_eq!(count, 1);
+    }
+}

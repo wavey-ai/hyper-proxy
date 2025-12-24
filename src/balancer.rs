@@ -26,3 +26,24 @@ impl FromStr for LoadBalancingMode {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn load_balancing_mode_parses_variants() {
+        assert_eq!("leastconn".parse::<LoadBalancingMode>().unwrap(), LoadBalancingMode::LeastConn);
+        assert_eq!("least_conn".parse::<LoadBalancingMode>().unwrap(), LoadBalancingMode::LeastConn);
+        assert_eq!("least".parse::<LoadBalancingMode>().unwrap(), LoadBalancingMode::LeastConn);
+        assert_eq!("queue".parse::<LoadBalancingMode>().unwrap(), LoadBalancingMode::Queue);
+        assert_eq!("queued".parse::<LoadBalancingMode>().unwrap(), LoadBalancingMode::Queue);
+        assert!("unknown".parse::<LoadBalancingMode>().is_err());
+    }
+
+    #[test]
+    fn load_balancing_mode_as_str() {
+        assert_eq!(LoadBalancingMode::LeastConn.as_str(), "leastconn");
+        assert_eq!(LoadBalancingMode::Queue.as_str(), "queue");
+    }
+}

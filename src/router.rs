@@ -165,3 +165,61 @@ async fn collect_body(mut body: BodyStream) -> Result<Bytes, ServerError> {
     }
     Ok(Bytes::from(data))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::balancer::LoadBalancingMode;
+    use http::StatusCode;
+    use std::sync::Once;
+
+    fn init_crypto() {
+        static INIT: Once = Once::new();
+        INIT.call_once(|| {
+            let _ = rustls::crypto::ring::default_provider().install_default();
+        });
+    }
+
+    fn has_header(response: &HandlerResponse, name: &str, value: &str) -> bool {
+        response.headers.iter().any(|(key, val)| {
+            key.eq_ignore_ascii_case(name) && val == value
+        })
+    }
+
+    #[tokio::test]
+    async fn options_returns_no_content_and_request_id() {
+        init_crypto();
+        let state = Arc::new(ProxyState::new(LoadBalancingMode::LeastConn).unwrap());
+        let router = ProxyRouter::new(state);
+
+        let req = Request::builder()
+            .method(Method::OPTIONS)
+            .uri("https://example.com/")
+            .header(context::REQUEST_ID_HEADER, "req-opts")
+            .body(())
+            .unwrap();
+
+        let response = router.route(req).await.unwrap();
+        assert_eq!(response.status, StatusCode::NO_CONTENT);
+        assert!(response.body.is_none());
+        assert!(has_header(&response, context::REQUEST_ID_HEADER, "req-opts"));
+    }
+
+    #[tokio::test]
+    async fn api_health_attaches_request_id() {
+        init_crypto();
+        let state = Arc::new(ProxyState::new(LoadBalancingMode::LeastConn).unwrap());
+        let router = ProxyRouter::new(state);
+
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("https://example.com/api/health")
+            .header(context::REQUEST_ID_HEADER, "req-health")
+            .body(())
+            .unwrap();
+
+        let response = router.route(req).await.unwrap();
+        assert_eq!(response.status, StatusCode::OK);
+        assert!(has_header(&response, context::REQUEST_ID_HEADER, "req-health"));
+    }
+}
