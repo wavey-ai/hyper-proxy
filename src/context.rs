@@ -1,0 +1,50 @@
+use http::{HeaderMap, Request};
+use uuid::Uuid;
+use web_service::HandlerResponse;
+
+pub const REQUEST_ID_HEADER: &str = "x-request-id";
+
+#[derive(Debug, Clone)]
+pub struct RequestContext {
+    pub request_id: String,
+}
+
+pub fn ensure_context(req: &mut Request<()>) -> RequestContext {
+    if let Some(existing) = req.extensions().get::<RequestContext>().cloned() {
+        return existing;
+    }
+
+    let request_id = request_id_from_headers(req.headers())
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
+
+    let context = RequestContext { request_id };
+    req.extensions_mut().insert(context.clone());
+    context
+}
+
+pub fn request_id(req: &Request<()>) -> Option<&str> {
+    req.extensions()
+        .get::<RequestContext>()
+        .map(|ctx| ctx.request_id.as_str())
+}
+
+pub fn attach_request_id(response: &mut HandlerResponse, request_id: &str) {
+    let exists = response
+        .headers
+        .iter()
+        .any(|(key, _)| key.eq_ignore_ascii_case(REQUEST_ID_HEADER));
+    if !exists {
+        response
+            .headers
+            .push((REQUEST_ID_HEADER.to_string(), request_id.to_string()));
+    }
+}
+
+fn request_id_from_headers(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(REQUEST_ID_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}

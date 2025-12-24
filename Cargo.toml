@@ -1,0 +1,31 @@
+[package]
+name = "hyper-proxy"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0"
+async-trait = "0.1"
+bytes = "1.5"
+dotenvy = "0.15"
+futures-util = "0.3"
+http = "1"
+http-body-util = "0.1"
+hyper = { version = "1.6", features = ["full"] }
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "webpki-tokio", "ring"] }
+hyper-util = { version = "0.1", features = ["full"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.45", features = ["full"] }
+tokio-tungstenite = { version = "0.27", features = ["rustls-tls-webpki-roots"] }
+tracing = "0.1"
+tracing-log = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+url = { version = "2", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+web-service = { git = "https://github.com/wavey-ai/web-services.git" }
+
+[dev-dependencies]
+base64 = "0.22"
+rcgen = "0.13"
